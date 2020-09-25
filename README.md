@@ -1,5 +1,3 @@
-![eBay Tech Logo](ebay-tech-logo.png "eBay Tech Logo")
-
 # react-advertising
 
 A JavaScript library for display ads in [React](https://reactjs.org) applications.
