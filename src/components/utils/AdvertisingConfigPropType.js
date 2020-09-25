@@ -4,6 +4,15 @@ import AdvertisingSlotConfigPropType from './AdvertisingSlotConfigPropType';
 export default PropTypes.shape({
     path: PropTypes.string,
     targeting: PropTypes.object,
+    globalFailSafeTimeout: PropTypes.number.isRequired,
+    gam: PropTypes.shape({
+        lazyLoading: PropTypes.object,
+        requestMode: PropTypes.oneOf(['SRA', 'MRA']),
+    }).isRequired,
+    amazon: PropTypes.shape({
+        pubID: PropTypes.string.isRequired,
+        adServer: PropTypes.oneOf(['googletag']).isRequired,
+    }).isRequired,
     prebid: PropTypes.shape({
         debug: PropTypes.bool,
         bidderTimeout: PropTypes.number,

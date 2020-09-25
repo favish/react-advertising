@@ -1,4 +1,6 @@
 import getAdUnits from './utils/getAdUnits';
+import getAmazonAdUnits from './utils/getAmazonAdUnits';
+require('array.prototype.find').shim();
 
 export default class Advertising {
     constructor(config, plugins = [], onError = () => {}) {
@@ -20,6 +22,8 @@ export default class Advertising {
     // ---------- PUBLIC METHODS ----------
 
     async setup() {
+        this.initAmazon();
+        this.setupAmazon();
         this.executePlugins('setup');
         const { slots, outOfPageSlots, queue } = this;
         this.setupCustomEvents();
@@ -41,17 +45,8 @@ export default class Advertising {
         }
         const divIds = queue.map(({ id }) => id);
         const selectedSlots = queue.map(({ id }) => slots[id] || outOfPageSlots[id]);
-        Advertising.queueForPrebid(
-            () =>
-                window.pbjs.requestBids({
-                    adUnitCodes: divIds,
-                    bidsBackHandler: () => {
-                        window.pbjs.setTargetingForGPTAsync(divIds);
-                        Advertising.queueForGPT(() => window.googletag.pubads().refresh(selectedSlots), this.onError);
-                    },
-                }),
-            this.onError
-        );
+
+        this.fetchHeaderBiddersInParallel(divIds, selectedSlots);
     }
 
     async teardown() {
@@ -158,28 +153,54 @@ export default class Advertising {
         return sizeMappingName && this.gptSizeMappings[sizeMappingName] ? this.gptSizeMappings[sizeMappingName] : null;
     }
 
+    validForViewport(sizeMapping) {
+        const viewportHeight = window.innerHeight;
+        const viewportWidth = window.innerWidth;
+
+        // Search the size mapping array for the first hit that fits the current viewport, working from top.
+        const result = sizeMapping.find(function (mapping) {
+            return viewportWidth >= mapping[0][0] && viewportHeight >= mapping[0][1];
+        });
+
+        // Ensure that the matched viewport has a size defined, else that unit should not be defined at this viewport.
+        if (result[1].length) {
+            return true;
+        }
+
+        return false;
+    }
+
     defineSlots() {
         this.config.slots.forEach(({ id, path, collapseEmptyDiv, targeting = {}, sizes, sizeMappingName }) => {
-            const slot = window.googletag.defineSlot(path || this.config.path, sizes, id);
-
             const sizeMapping = this.getGptSizeMapping(sizeMappingName);
-            if (sizeMapping) {
-                slot.defineSizeMapping(sizeMapping);
+            let slot = false;
+
+            if (!sizeMapping) {
+                slot = window.googletag.defineSlot(path || this.config.path, sizes, id);
+            } else if (this.validForViewport(sizeMapping)) {
+                console.log(id + ' is valid for this viewport');
+                slot = window.googletag.defineSlot(path || this.config.path, sizes, id);
             }
 
-            if (collapseEmptyDiv && collapseEmptyDiv.length && collapseEmptyDiv.length > 0) {
-                slot.setCollapseEmptyDiv(...collapseEmptyDiv);
+            if (slot) {
+                if (sizeMapping) {
+                    slot.defineSizeMapping(sizeMapping);
+                }
+
+                if (collapseEmptyDiv && collapseEmptyDiv.length && collapseEmptyDiv.length > 0) {
+                    slot.setCollapseEmptyDiv(...collapseEmptyDiv);
+                }
+
+                const entries = Object.entries(targeting);
+                for (let i = 0; i < entries.length; i++) {
+                    const [key, value] = entries[i];
+                    slot.setTargeting(key, value);
+                }
+
+                slot.addService(window.googletag.pubads());
+
+                this.slots[id] = slot;
             }
-
-            const entries = Object.entries(targeting);
-            for (let i = 0; i < entries.length; i++) {
-                const [key, value] = entries[i];
-                slot.setTargeting(key, value);
-            }
-
-            slot.addService(window.googletag.pubads());
-
-            this.slots[id] = slot;
         });
     }
 
@@ -221,6 +242,40 @@ export default class Advertising {
         getAdUnits(this.config.slots).forEach(({ code }) => window.pbjs.removeAdUnit(code));
     }
 
+    initAmazon() {
+        !(function (a9, a, p, s, t, A, g) {
+            if (a[a9]) return;
+            function q(c, r) {
+                a[a9]._Q.push([c, r]);
+            }
+            a[a9] = {
+                init() {
+                    q('i', arguments);
+                },
+                fetchBids() {
+                    q('f', arguments);
+                },
+                setDisplayBids() {},
+                targetingKeys() {
+                    return [];
+                },
+                _Q: [],
+            };
+            A = p.createElement(s);
+            A.async = !0;
+            A.src = t;
+            g = p.getElementsByTagName(s)[0];
+            g.parentNode.insertBefore(A, g);
+        })('apstag', window, document, 'script', '//c.amazon-adsystem.com/aax2/apstag.js');
+    }
+
+    setupAmazon() {
+        window.apstag.init({
+            pubID: this.config.amazon.pubID,
+            adServer: this.config.amazon.adServer,
+        });
+    }
+
     setupGpt() {
         this.executePlugins('setupGpt');
         const pubads = window.googletag.pubads();
@@ -234,9 +289,17 @@ export default class Advertising {
             pubads.setTargeting(key, value);
         }
         pubads.disableInitialLoad();
-        pubads.enableSingleRequest();
+
+        if (this.config.gam.requestMode === 'SRA') {
+            pubads.enableSingleRequest();
+        }
+
+        if (this.config.gam.lazyLoading) {
+            window.googletag.pubads().enableLazyLoad(this.config.gam.lazyLoading);
+        }
 
         window.googletag.enableServices();
+
         this.displaySlots();
         this.displayOutOfPageSlots();
     }
@@ -267,12 +330,92 @@ export default class Advertising {
         }
     }
 
+    fetchHeaderBiddersInParallel(divIds, selectedSlots) {
+        const amazonAdUnits = getAmazonAdUnits(this.config.slots);
+        const FAILSAFE_TIMEOUT = this.config.globalFailSafeTimeout;
+        const requestManager = {
+            adserverRequestSent: false,
+            aps: false,
+            prebid: false,
+        };
+
+        // When both APS and Prebid have returned, initiate ad request
+        function biddersBack() {
+            if (requestManager.aps && requestManager.prebid) {
+                sendAdserverRequest();
+            }
+            return;
+        }
+
+        function sendAdserverRequest() {
+            if (requestManager.adserverRequestSent === true) {
+                return;
+            }
+            requestManager.adserverRequestSent = true;
+            window.googletag.cmd.push(function () {
+                window.googletag.pubads().refresh();
+            });
+        }
+
+        // Request bids from both Amazon and Prebid.
+        function requestHeaderBids() {
+            // Amazon request
+            window.apstag.fetchBids(
+                {
+                    slots: amazonAdUnits,
+                },
+                function () {
+                    window.googletag.cmd.push(function () {
+                        window.apstag.setDisplayBids();
+                        requestManager.aps = true; // Signals that APS request has completed
+                        biddersBack(); // Checks whether both APS and Prebid have returned
+                    });
+                }
+            );
+
+            // Prebid Request
+            window.pbjs.que.push(function () {
+                window.pbjs.requestBids({
+                    bidsBackHandler() {
+                        window.googletag.cmd.push(function () {
+                            window.pbjs.setTargetingForGPTAsync();
+                            requestManager.prebid = true; // Signals that Prebid request has completed
+                            biddersBack(); // Checks whether both APS and Prebid have returned
+                        });
+                    },
+                });
+            });
+
+            Advertising.queueForPrebid(() =>
+                window.pbjs.requestBids({
+                    adUnitCodes: divIds,
+                    bidsBackHandler: () => {
+                        window.pbjs.setTargetingForGPTAsync(divIds);
+                        Advertising.queueForGPT(() => window.googletag.pubads().refresh(selectedSlots), this.onError);
+                    },
+                })
+            );
+        }
+
+        // Initiate bid request
+        requestHeaderBids();
+
+        // Set failsafe timeout
+        window.setTimeout(function () {
+            sendAdserverRequest();
+        }, FAILSAFE_TIMEOUT);
+    }
+
     static queueForGPT(func, onError) {
         return Advertising.withQueue(window.googletag.cmd, func, onError);
     }
 
     static queueForPrebid(func, onError) {
         return Advertising.withQueue(window.pbjs.que, func, onError);
+    }
+
+    static queueForAmazon(func, onError) {
+        return Advertising.withQueue(window.apstag.init, func, onError);
     }
 
     static withQueue(queue, func, onError) {

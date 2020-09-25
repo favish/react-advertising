@@ -20,6 +20,10 @@ const USD_TO_EUR_RATE = 2;
 export const config = {
     active: true,
     path: GLOBAL_AD_UNIT_PATH,
+    amazon: {
+        pubID: '940db4ee-28cf-4307-9b65-76d8ba12e927',
+        adServer: 'googletag',
+    },
     prebid: {
         bidderTimeout: 1500,
         priceGranularity: 'medium',
@@ -30,6 +34,7 @@ export const config = {
             id: DIV_ID_FOO,
             targeting: { a: SLOT_ID_FOO },
             sizes: GPT_SIZES,
+            amazon: true,
             prebid: [
                 {
                     mediaTypes: {

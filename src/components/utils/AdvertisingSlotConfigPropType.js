@@ -24,7 +24,9 @@ export default PropTypes.shape({
                     labelAny: PropTypes.arrayOf(PropTypes.string),
                     labelAll: PropTypes.arrayOf(PropTypes.string),
                 })
-            ).isRequired,
+            ),
         })
-    ).isRequired,
+    ),
+    amazon: PropTypes.bool.isRequired,
+    closable: PropTypes.bool,
 });
