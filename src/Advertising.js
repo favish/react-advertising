@@ -1,5 +1,4 @@
 import getAdUnits from './utils/getAdUnits';
-import getAmazonAdUnits from './utils/getAmazonAdUnits';
 require('array.prototype.find').shim();
 
 export default class Advertising {
@@ -46,7 +45,17 @@ export default class Advertising {
         const divIds = queue.map(({ id }) => id);
         const selectedSlots = queue.map(({ id }) => slots[id] || outOfPageSlots[id]);
 
-        this.fetchHeaderBiddersInParallel(divIds, selectedSlots);
+        Advertising.queueForPrebid(
+            () =>
+                window.pbjs.requestBids({
+                    adUnitCodes: divIds,
+                    bidsBackHandler: () => {
+                        window.pbjs.setTargetingForGPTAsync(divIds);
+                        Advertising.queueForGPT(() => window.googletag.pubads().refresh(selectedSlots), this.onError);
+                    },
+                }),
+            this.onError
+        );
     }
 
     async teardown() {
@@ -61,7 +70,13 @@ export default class Advertising {
     }
 
     activate(id, customEventHandlers = {}) {
+        // Bail if the component exists, but no config does.
+        // This allows us to have components on page but we dont want to run the auction for it.
+        if (!this.slots[id]) {
+            return;
+        }
         const { slots } = this;
+
         if (Object.values(slots).length === 0) {
             this.queue.push({ id, customEventHandlers });
             return;
@@ -72,6 +87,35 @@ export default class Advertising {
             }
             return (this.customEventCallbacks[customEventId][id] = customEventHandlers[customEventId]);
         });
+
+        let selectedSlot = null;
+        this.config.slots.forEach(function (slot) {
+            if (slot.id === id) {
+                selectedSlot = slot;
+            }
+        });
+
+        // APS request if its enabled for the unit.
+        // Prebid will handle calling GPT. Amazon gets a chance to bid before.
+        if (selectedSlot.amazon) {
+            window.apstag.fetchBids(
+                {
+                    slots: [
+                        {
+                            slotID: id,
+                            slotName: slots[id].getAdUnitPath(),
+                            sizes: selectedSlot.sizes,
+                        },
+                    ],
+                },
+                function (bids) {
+                    window.googletag.cmd.push(function () {
+                        window.apstag.setDisplayBids();
+                    });
+                }
+            );
+        }
+
         Advertising.queueForPrebid(
             () =>
                 window.pbjs.requestBids({
@@ -153,34 +197,10 @@ export default class Advertising {
         return sizeMappingName && this.gptSizeMappings[sizeMappingName] ? this.gptSizeMappings[sizeMappingName] : null;
     }
 
-    validForViewport(sizeMapping) {
-        const viewportHeight = window.innerHeight;
-        const viewportWidth = window.innerWidth;
-
-        // Search the size mapping array for the first hit that fits the current viewport, working from top.
-        const result = sizeMapping.find(function (mapping) {
-            return viewportWidth >= mapping[0][0] && viewportHeight >= mapping[0][1];
-        });
-
-        // Ensure that the matched viewport has a size defined, else that unit should not be defined at this viewport.
-        if (result[1].length) {
-            return true;
-        }
-
-        return false;
-    }
-
     defineSlots() {
         this.config.slots.forEach(({ id, path, collapseEmptyDiv, targeting = {}, sizes, sizeMappingName }) => {
             const sizeMapping = this.getGptSizeMapping(sizeMappingName);
-            let slot = false;
-
-            if (!sizeMapping) {
-                slot = window.googletag.defineSlot(path || this.config.path, sizes, id);
-            } else if (this.validForViewport(sizeMapping)) {
-                console.log(id + ' is valid for this viewport');
-                slot = window.googletag.defineSlot(path || this.config.path, sizes, id);
-            }
+            const slot = window.googletag.defineSlot(path || this.config.path, sizes, id);
 
             if (slot) {
                 if (sizeMapping) {
@@ -328,82 +348,6 @@ export default class Advertising {
                 func.call(this);
             }
         }
-    }
-
-    fetchHeaderBiddersInParallel(divIds, selectedSlots) {
-        const amazonAdUnits = getAmazonAdUnits(this.config.slots);
-        const FAILSAFE_TIMEOUT = this.config.globalFailSafeTimeout;
-        const requestManager = {
-            adserverRequestSent: false,
-            aps: false,
-            prebid: false,
-        };
-
-        // When both APS and Prebid have returned, initiate ad request
-        function biddersBack() {
-            if (requestManager.aps && requestManager.prebid) {
-                sendAdserverRequest();
-            }
-            return;
-        }
-
-        function sendAdserverRequest() {
-            if (requestManager.adserverRequestSent === true) {
-                return;
-            }
-            requestManager.adserverRequestSent = true;
-            window.googletag.cmd.push(function () {
-                window.googletag.pubads().refresh();
-            });
-        }
-
-        // Request bids from both Amazon and Prebid.
-        function requestHeaderBids() {
-            // Amazon request
-            window.apstag.fetchBids(
-                {
-                    slots: amazonAdUnits,
-                },
-                function () {
-                    window.googletag.cmd.push(function () {
-                        window.apstag.setDisplayBids();
-                        requestManager.aps = true; // Signals that APS request has completed
-                        biddersBack(); // Checks whether both APS and Prebid have returned
-                    });
-                }
-            );
-
-            // Prebid Request
-            window.pbjs.que.push(function () {
-                window.pbjs.requestBids({
-                    bidsBackHandler() {
-                        window.googletag.cmd.push(function () {
-                            window.pbjs.setTargetingForGPTAsync();
-                            requestManager.prebid = true; // Signals that Prebid request has completed
-                            biddersBack(); // Checks whether both APS and Prebid have returned
-                        });
-                    },
-                });
-            });
-
-            Advertising.queueForPrebid(() =>
-                window.pbjs.requestBids({
-                    adUnitCodes: divIds,
-                    bidsBackHandler: () => {
-                        window.pbjs.setTargetingForGPTAsync(divIds);
-                        Advertising.queueForGPT(() => window.googletag.pubads().refresh(selectedSlots), this.onError);
-                    },
-                })
-            );
-        }
-
-        // Initiate bid request
-        requestHeaderBids();
-
-        // Set failsafe timeout
-        window.setTimeout(function () {
-            sendAdserverRequest();
-        }, FAILSAFE_TIMEOUT);
     }
 
     static queueForGPT(func, onError) {

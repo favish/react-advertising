@@ -1,5 +1,10 @@
 # react-advertising
 
+This is a forked, modified version of react-advertising (https://www.npmjs.com/package/react-advertising).
+
+Modifications include adding Amazon TAM bidding in parallel, making header bidding optional, and adding
+additional configuration for ad units to handle min/max widths and other features.
+
 A JavaScript library for display ads in [React](https://reactjs.org) applications.
 
 **Integrate ads in your app the “React way”: by adding ad components to your JSX layout!**
@@ -18,24 +23,9 @@ To use *react-advertising*, you need to have a [Doubleclick for Publishers](http
 (DFP) ad server set up, along with configuration to use Prebid in place. Please refer to the
 [Prebid documentation](http://prebid.org/overview/intro.html) for details.
 
-## Demo
-
-You can view a demo of this library online on *CodeSandbox*:
-
-*   [https://codesandbox.io/s/react-advertising-demo-p5xdm](https://codesandbox.io/s/react-advertising-demo-p5xdm)
-
 The demo uses the same test Prebid configuration as the
 [code examples from the official documentation](http://prebid.org/dev-docs/examples/basic-example.html).
 
-## Documentation
-
-You can find documentation on how to use this library in the project's wiki:
-
-* [Usage](https://github.com/technology-ebay-de/react-advertising/wiki/Usage)
-* [API](https://github.com/technology-ebay-de/react-advertising/wiki/API)
-* [Configuration](https://github.com/technology-ebay-de/react-advertising/wiki/Configuration)
-* [Custom Events](https://github.com/technology-ebay-de/react-advertising/wiki/Custom-Events)
-* [Plugins](https://github.com/technology-ebay-de/react-advertising/wiki/Custom-Events)
 
 ## License
 
